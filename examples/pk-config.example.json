@@ -1,0 +1,18 @@
+{
+  "Target":            [ "AD", "EntraID" ],
+
+  "ForestName":        "corp.example.com",
+  "DomainNames":       [ "corp.example.com", "eu.corp.example.com" ],
+
+  "TenantId":          "00000000-0000-0000-0000-000000000000",
+  "TenantAppId":       "11111111-1111-1111-1111-111111111111",
+  "TenantAppSecret":   "REPLACE-ME-OR-SET-PK_TENANT_APP_SECRET",
+
+  "AttackWindowDays":  30,
+  "ThrottleLimit":     0,
+  "IndicatorTimeoutSeconds": 900,
+
+  "OutputPath":        "D:\\Reports\\PurpleKnight",
+  "OutputFormat":      [ "Json", "Csv", "Html" ],
+  "FailOn":            "None"
+}
