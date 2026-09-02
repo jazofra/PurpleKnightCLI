@@ -27,16 +27,165 @@ with a small set of connection parameters. This CLI does the same thing:
   `-ListIndicators` (`Directory.Read.All`, `Policy.Read.All`, `AuditLog.Read.All`,
   `RoleManagement.Read.Directory`, ...) and a client secret.
 
-## Layout
+## Getting Purple Knight
+
+The CLI is a runner, not a replacement: it needs a Purple Knight Community installation
+next to it, because the indicator scripts, the `Semperis-Lib` helper module and the
+result type all come from that installation.
+
+Purple Knight Community is free. Semperis distributes it from
+[purple-knight.com](https://www.purple-knight.com/) — request it there with a business
+email address and a download link arrives by mail. It ships as a ZIP archive
+(`Purple-Knight-<version>.zip`), not an installer, so "installing" it means unblocking
+and extracting the archive wherever you want it to live:
+
+```powershell
+Unblock-File .\Purple-Knight-*.zip
+Expand-Archive .\Purple-Knight-*.zip -DestinationPath 'C:\Tools\PurpleKnight'
+```
+
+Extract to a path the running account can write to — Purple Knight writes its `Output`
+and `Logs` folders underneath itself, and so does this CLI. Avoid `C:\Program Files`
+for that reason. A folder that already holds Purple Knight looks like this:
 
 ```
-CLI\
-  Invoke-PurpleKnight.ps1    entry point
-  PurpleKnightCli.psm1       discovery, execution, scoring and reporting
-  lib\                       Semperis.PSSecurityIndicatorResult.dll (result type)
-  cache\                     cached indicator catalog, rebuilt automatically
-  examples\                  sample config file and scheduled-task wrapper
+C:\Tools\PurpleKnight\
+  PurpleKnight.exe
+  Settings.xml
+  Scripts\
+    Scripts.config.xml
+    Semperis.SI.<name>\<version>\<name>.ps1
+    Semperis-Lib\...
 ```
+
+`Scripts\Scripts.config.xml` is the marker the CLI looks for when it locates an
+installation, so if that file is not there the archive was not fully extracted.
+
+You never have to launch `PurpleKnight.exe` before using the CLI. Running the desktop
+application once is only worth doing if you want it to extract
+`Semperis.PSSecurityIndicatorResult.dll` to `%TEMP%` — and even that is optional, since
+this repository ships a copy under `lib\` and the CLI compiles an equivalent type when
+neither is available.
+
+To upgrade, extract the new Purple Knight release over the same folder and keep the
+`CLI` folder in place. New and changed indicators are picked up on the next run; the
+catalog cache invalidates itself when indicator module versions change.
+
+## Deployment
+
+The CLI is a folder of PowerShell files with nothing to compile and nothing to register.
+Deploying it means putting this repository into a folder named `CLI` **inside** the
+Purple Knight installation directory:
+
+```
+C:\Tools\PurpleKnight\        <- InstallPath
+  PurpleKnight.exe
+  Scripts\                    <- indicators and Semperis-Lib, untouched
+  Output\                     <- default report location
+  CLI\                        <- this repository
+    Invoke-PurpleKnight.ps1     entry point
+    PurpleKnightCli.psm1        discovery, execution, scoring and reporting
+    lib\                        Semperis.PSSecurityIndicatorResult.dll (result type)
+    cache\                      cached indicator catalog, rebuilt automatically
+    examples\                   sample config file and scheduled-task wrapper
+```
+
+That layout is the one the CLI is built around: with no `-InstallPath` given, it takes
+the parent of its own folder as the installation, so everything resolves without
+configuration. It is also where the CLI caches the indicator catalog (`CLI\cache`) and
+the result-type assembly (`CLI\lib`).
+
+Clone it directly into place:
+
+```powershell
+git clone https://github.com/jazofra/PurpleKnightCLI.git 'C:\Tools\PurpleKnight\CLI'
+```
+
+Or, if you downloaded the repository as a ZIP, extract it and unblock the files — files
+that came from a browser download carry the mark-of-the-web and PowerShell refuses to
+load them:
+
+```powershell
+Expand-Archive .\PurpleKnightCLI-main.zip -DestinationPath $env:TEMP\pkcli
+Copy-Item "$env:TEMP\pkcli\PurpleKnightCLI-main\*" 'C:\Tools\PurpleKnight\CLI' -Recurse
+Get-ChildItem 'C:\Tools\PurpleKnight\CLI' -Recurse | Unblock-File
+```
+
+Verify the deployment — this loads the catalog from the installation and prints it,
+without touching any directory or tenant:
+
+```powershell
+pwsh -File 'C:\Tools\PurpleKnight\CLI\Invoke-PurpleKnight.ps1' -ListIndicators
+```
+
+If it reports that it could not locate a Purple Knight installation, the `CLI` folder is
+not where it expects; see the next section.
+
+### Keeping the CLI somewhere else
+
+The `CLI`-inside-the-installation layout is only the default. The CLI resolves the
+installation directory in this order and takes the first candidate that contains
+`Scripts\Scripts.config.xml`:
+
+1. `-InstallPath`
+2. the parent of the folder holding `Invoke-PurpleKnight.ps1`
+3. `$env:PURPLEKNIGHT_HOME`
+4. the current directory
+
+So a checkout kept outside the installation works just as well, as long as one of the
+other candidates points at it:
+
+```powershell
+# per invocation
+pwsh -File C:\Repos\PurpleKnightCLI\Invoke-PurpleKnight.ps1 -InstallPath 'C:\Tools\PurpleKnight' -Target AD
+
+# or once, for the machine
+[Environment]::SetEnvironmentVariable('PURPLEKNIGHT_HOME', 'C:\Tools\PurpleKnight', 'Machine')
+```
+
+Keeping the CLI outside the installation has one practical advantage: a Purple Knight
+upgrade that replaces the whole folder cannot take your checkout with it. The cost is
+that `cache\` and `lib\` are then written under the installation's own `CLI\` folder
+rather than next to your scripts.
+
+### PowerShell 7
+
+The desktop application hosts PowerShell 7.4, so the indicators expect `pwsh`, not
+Windows PowerShell 5.1. If `pwsh` is not on the machine:
+
+```powershell
+winget install --id Microsoft.PowerShell --source winget
+```
+
+`pwsh -Version` should report 7.0 or later. No modules need to be installed from the
+gallery — the indicators use `Semperis-Lib` from the installation, and everything else
+they need is in the box.
+
+### Deploying to a run host
+
+Purple Knight assesses remote environments, so the CLI usually lives on one host —
+a jump box, an admin workstation or a scheduled-task server — rather than on the domain
+controllers. That host needs:
+
+* line of sight to what it assesses: LDAP/LDAPS (389/636), Global Catalog (3268/3269),
+  SMB to `SYSVOL` (445), RPC and remote registry for the handful of indicators that need
+  them, and outbound HTTPS to `graph.microsoft.com` for Entra ID or to your Okta domain;
+* an account with the permissions Purple Knight normally needs — a plain domain user
+  covers most AD indicators;
+* for Entra ID or Okta, the app registration or API token, ideally supplied through the
+  `PK_*` environment variables or a config file rather than on the command line.
+
+To push the same deployment to several hosts, copy the installation folder with the
+`CLI` folder already inside it; there is no per-machine state in either. Delete
+`CLI\cache\indicator-catalog.json` before copying if the target machines run a different
+Purple Knight version, or pass `-RefreshCatalog` on the first run there.
+
+For an air-gapped or restricted host, carry in the Purple Knight ZIP, this repository
+and the PowerShell 7 MSI. Nothing else is fetched at run time: the CLI has no package
+dependencies and never calls out to Semperis.
+
+Once deployed, `examples\Run-Scheduled.ps1` turns the CLI into a recurring assessment —
+see [Scheduling](#scheduling) below.
 
 ## Quick start
 
@@ -313,3 +462,22 @@ Read-Host 'Client secret' -AsSecureString |
 * Indicator parameter overrides work the same way as in the desktop application: place
   `<ScriptName>.json` files in a `Config` folder next to the installation, or set the
   `IOE_<ScriptName>_CONFIG` environment variable.
+
+## Credits
+
+Purple Knight is built and maintained by **[Semperis](https://www.semperis.com/)**, and
+all of the security research in it is theirs. Every indicator of exposure this CLI runs
+is a Semperis script, executed unmodified from the Purple Knight installation; the
+posture score, severity weights and grade thresholds are Semperis' algorithm, reproduced
+so the numbers match the desktop application; and connection, token and directory
+handling are done through Semperis' own `Semperis-Lib` module.
+
+* [Purple Knight](https://www.purple-knight.com/) — the free community assessment tool
+* [Semperis](https://www.semperis.com/) — Purple Knight, Directory Services Protector and
+  the identity security research behind them
+
+This project is an independent, unofficial command line front end. It is not affiliated
+with, endorsed by, or supported by Semperis, and it ships no Semperis code: the indicator
+scripts and helper modules come from the Purple Knight installation you download from
+Semperis yourself, under Semperis' own licence terms. For anything about the indicators,
+the findings or the product, go to Semperis — not here.
